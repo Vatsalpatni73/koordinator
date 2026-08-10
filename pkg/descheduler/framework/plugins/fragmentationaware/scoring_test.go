@@ -130,3 +130,62 @@ func TestScoreNodeImbalance(t *testing.T) {
 		assert.Equal(t, 0.25, stdDev)
 	})
 }
+
+func TestNodeImbalanceState(t *testing.T) {
+	resources := []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory}
+
+	t.Run("nil node returns nil state", func(t *testing.T) {
+		state := newNodeImbalanceState(nil, nil, resources)
+		assert.Nil(t, state)
+		assert.Equal(t, 0.0, (*nodeImbalanceState)(nil).score())
+		assert.Equal(t, 0.0, (*nodeImbalanceState)(nil).scoreWithout(makePod("p", 100, 100)))
+	})
+
+	t.Run("score matches scoreNodeImbalance", func(t *testing.T) {
+		node := makeNode(4000, 4000)
+		pods := []*corev1.Pod{
+			makePod("p1", 2500, 500),
+			makePod("p2", 500, 500),
+		}
+		state := newNodeImbalanceState(node, pods, resources)
+		assert.InDelta(t, scoreNodeImbalance(node, pods, resources), state.score(), 1e-12)
+	})
+
+	t.Run("scoreWithout matches from-scratch scoring", func(t *testing.T) {
+		node := makeNode(4000, 4000)
+		pods := []*corev1.Pod{
+			makePod("p1", 2500, 500),
+			makePod("p2", 500, 500),
+			makePod("p3", 200, 1000),
+		}
+		state := newNodeImbalanceState(node, pods, resources)
+
+		for i, removePod := range pods {
+			var remaining []*corev1.Pod
+			for j, p := range pods {
+				if j != i {
+					remaining = append(remaining, p)
+				}
+			}
+			fromScratch := scoreNodeImbalance(node, remaining, resources)
+			incremental := state.scoreWithout(removePod)
+			assert.InDelta(t, fromScratch, incremental, 1e-12,
+				"mismatch when removing pod %d", i)
+		}
+	})
+
+	t.Run("scoreWithout with zero allocatable resource", func(t *testing.T) {
+		node := makeNode(4000, 0) // memory allocatable is 0
+		pods := []*corev1.Pod{
+			makePod("p1", 2000, 500),
+			makePod("p2", 1000, 300),
+		}
+		state := newNodeImbalanceState(node, pods, resources)
+		// Only CPU is tracked; stddev of a single value is 0
+		assert.Equal(t, 0.0, state.score())
+
+		remaining := []*corev1.Pod{pods[1]}
+		assert.InDelta(t, scoreNodeImbalance(node, remaining, resources),
+			state.scoreWithout(pods[0]), 1e-12)
+	})
+}
